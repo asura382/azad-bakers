@@ -62,7 +62,13 @@ const DEMO=[{id:"d1",name:"Celebration Cake",category:"Cakes",price:899,descript
 let data=[],editId=null;
 const $=id=>document.getElementById(id); function safe(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 function setError(m){$("loginError").textContent=m||""}
-async function boot(){const {data:{session}}=await client.auth.getSession();if(session){await verifyOwner();}else{$("login").style.display="grid"}}
+async function boot(){
+  registerServiceWorker();
+  setupInstallPrompt();
+  const {data:{session}}=await client.auth.getSession();
+  if(session){await verifyOwner();}
+  else{$("login").style.display="grid"}
+}
 async function login(){setError("");const email=$("email").value.trim(),password=$("password").value;if(!email||!password){setError("Enter the owner email and password.");return}const {error}=await client.auth.signInWithPassword({email,password});if(error){setError(error.message);return}await verifyOwner()}
 async function verifyOwner(){const {data:owner,error}=await client.rpc("is_owner");if(error||owner!==true){await client.auth.signOut();$("login").style.display="grid";setError("This account is authenticated but is not registered as an Azad Bakers owner.");return}$("login").style.display="none";$("app").style.display="block";await refreshAll();await subscribeOrders();if("Notification" in window&&Notification.permission==="granted")$("alertPermissionBtn").textContent="Order alerts enabled";await subscribeOrders();if("Notification" in window&&Notification.permission==="granted")$("alertPermissionBtn").textContent="Order alerts enabled"}
 async function logout(){await client.auth.signOut();location.reload()}
