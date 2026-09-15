@@ -129,7 +129,21 @@ function showOrderDetail(o){
   const node=wrapper.firstElementChild;
   document.querySelector("#orders .panel").appendChild(node);
 }
-async function subscribeOrders(){if(orderChannel)return;orderChannel=client.channel("azad-orders-live").on("postgres_changes",{event:"INSERT",schema:"public",table:"orders"},()=>loadOrders()).subscribe((status)=>{if(status==="SUBSCRIBED")console.log("Live order updates connected")})}
+async function subscribeOrders(){
+  if(orderChannel)return;
+  orderChannel=client.channel("azad-orders-live")
+    .on("postgres_changes",{
+      event:"INSERT",
+      schema:"public",
+      table:"orders"
+    },payload=>{
+      loadOrders();
+      notifyNewOrder(payload.new);
+    })
+    .subscribe(status=>{
+      if(status==="SUBSCRIBED")console.log("Live order updates connected");
+    });
+}
 function notifyNewOrders(rows){document.title=`(${rows.length}) New order · Azad Bakers`;setTimeout(()=>{document.title="Azad Bakers · Admin"},5000);if("Notification" in window&&Notification.permission==="granted")rows.forEach(o=>new Notification("New Azad Bakers order",{body:`${o.customer_name} · ₹${Number(o.total).toLocaleString("en-IN")}`}));try{const AC=window.AudioContext||window.webkitAudioContext;if(AC){const ac=new AC();const osc=ac.createOscillator();const gain=ac.createGain();gain.gain.value=.04;osc.frequency.value=880;osc.connect(gain);gain.connect(ac.destination);osc.start();osc.stop(ac.currentTime+.15)}}catch{}}
 async function enableOrderAlerts(){if(!("Notification" in window)){alert("This browser does not support notifications.");return}const p=await Notification.requestPermission();$("alertPermissionBtn").textContent=p==="granted"?"Order alerts enabled":"Enable order alerts"}
 async function loadSettings(){const {data:row,error}=await client.from("store_settings").select("*").eq("id",true).maybeSingle();if(error||!row)return;const fields=["sName","sWhats","sPhone","sMaps","sAddress","sHours"];if($("sName")){ $("sName").value=row.bakery_name||"";$("sWhats").value=row.whatsapp||"";$("sPhone").value=row.phone||"";$("sMaps").value=row.maps_url||"";$("sAddress").value=row.address||"";$("sHours").value=row.hours||""}}
