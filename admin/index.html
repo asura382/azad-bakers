@@ -52,7 +52,57 @@ function setupInstallPrompt(){
   })
 }
 function registerServiceWorker(){if("serviceWorker"in navigator&&location.protocol!=="file:")navigator.serviceWorker.register("/sw.js").catch(err=>console.warn("Service worker registration failed:",err))}
-function notifyNewOrder(order){document.title="🔔 New order · Azad Bakers";setTimeout(()=>document.title="Azad Bakers · Admin",6000);if("Notification"in window&&Notification.permission==="granted"){const n=new Notification("New Azad Bakers order",{body:`${order.customer_name} · ₹${Number(order.total).toLocaleString("en-IN")}`,icon:"../icons/icon-192.svg",tag:`azad-order-${order.id}`});n.onclick=()=>{window.focus();n.close()}}try{const AC=window.AudioContext||window.webkitAudioContext;if(AC){const ac=new AC(),o=ac.createOscillator(),g=ac.createGain();g.gain.value=.05;o.frequency.value=880;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.22)}}catch{}}
+async function notifyNewOrder(order){
+  document.title="🔔 New order · Azad Bakers";
+
+  setTimeout(()=>{
+    document.title="Azad Bakers · Admin";
+  },6000);
+
+  try{
+    if("Notification"in window && Notification.permission==="granted"){
+      const registration=await navigator.serviceWorker.ready;
+
+      await registration.showNotification("New Azad Bakers order",{
+        body:`${order.customer_name} · ₹${Number(order.total).toLocaleString("en-IN")}`,
+        icon:"/icons/icon-192.png",
+        badge:"/icons/icon-192.png",
+        tag:`azad-order-${order.id}`,
+        renotify:true,
+        requireInteraction:true,
+        vibrate:[200,100,200]
+      });
+    }
+  }catch(error){
+    console.warn("Notification failed:",error);
+  }
+
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+
+    if(AC){
+      const ac=new AC();
+
+      if(ac.state==="suspended"){
+        await ac.resume();
+      }
+
+      const o=ac.createOscillator();
+      const g=ac.createGain();
+
+      g.gain.value=.05;
+      o.frequency.value=880;
+
+      o.connect(g);
+      g.connect(ac.destination);
+
+      o.start();
+      o.stop(ac.currentTime+.22);
+    }
+  }catch(error){
+    console.warn("Alert sound failed:",error);
+  }
+}
 async function enableOrderAlerts(){if(!("Notification"in window)){alert("This browser does not support notifications.");return}const p=await Notification.requestPermission();const b=document.getElementById("alertPermissionBtn");if(b)b.textContent=p==="granted"?"Order alerts enabled":"Enable order alerts"}
 </script>
 <script>
