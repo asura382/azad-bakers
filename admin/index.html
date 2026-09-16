@@ -51,59 +51,108 @@ function setupInstallPrompt(){
     else alert("Your browser did not offer the install prompt. Open the browser menu and choose “Install Azad Bakers” or “Add to Home screen”.");
   })
 }
-function registerServiceWorker(){if("serviceWorker"in navigator&&location.protocol!=="file:")navigator.serviceWorker.register("/sw.js").catch(err=>console.warn("Service worker registration failed:",err))}
+async function registerServiceWorker(){if(!("serviceWorker"in navigator)||location.protocol==="file:")return null;try{return await navigator.serviceWorker.register("/sw.js")}catch(err){console.warn("Service worker registration failed:",err);return null}}
+let alertAudioContext=null;
+
+async function prepareAlertSound(){
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return false;
+  try{
+    if(!alertAudioContext)alertAudioContext=new AC();
+    if(alertAudioContext.state==="suspended")await alertAudioContext.resume();
+    return alertAudioContext.state==="running";
+  }catch(error){
+    console.warn("Alert sound setup failed:",error);
+    return false;
+  }
+}
+
 async function notifyNewOrder(order){
   document.title="🔔 New order · Azad Bakers";
-
-  setTimeout(()=>{
-    document.title="Azad Bakers · Admin";
-  },6000);
+  setTimeout(()=>document.title="Azad Bakers · Admin",6000);
 
   try{
-    if("Notification"in window && Notification.permission==="granted"){
-      const registration=await navigator.serviceWorker.ready;
+    if(await prepareAlertSound()){
+      const ac=alertAudioContext;
+      const now=ac.currentTime;
+      const gain=ac.createGain();
+      const o1=ac.createOscillator();
+      const o2=ac.createOscillator();
 
-      await registration.showNotification("New Azad Bakers order",{
-        body:`${order.customer_name} · ₹${Number(order.total).toLocaleString("en-IN")}`,
-        icon:"/icons/icon-192.png",
-        badge:"/icons/icon-192.png",
-        tag:`azad-order-${order.id}`,
-        renotify:true,
-        requireInteraction:true,
-        vibrate:[200,100,200]
-      });
-    }
-  }catch(error){
-    console.warn("Notification failed:",error);
-  }
+      gain.gain.setValueAtTime(.20,now);
+      gain.gain.exponentialRampToValueAtTime(.001,now+.55);
 
-  try{
-    const AC=window.AudioContext||window.webkitAudioContext;
+      o1.frequency.value=880;
+      o2.frequency.value=1175;
+      o1.connect(gain);
+      o2.connect(gain);
+      gain.connect(ac.destination);
 
-    if(AC){
-      const ac=new AC();
-
-      if(ac.state==="suspended"){
-        await ac.resume();
-      }
-
-      const o=ac.createOscillator();
-      const g=ac.createGain();
-
-      g.gain.value=.05;
-      o.frequency.value=880;
-
-      o.connect(g);
-      g.connect(ac.destination);
-
-      o.start();
-      o.stop(ac.currentTime+.22);
+      o1.start(now);
+      o1.stop(now+.22);
+      o2.start(now+.22);
+      o2.stop(now+.52);
     }
   }catch(error){
     console.warn("Alert sound failed:",error);
   }
 }
-async function enableOrderAlerts(){if(!("Notification"in window)){alert("This browser does not support notifications.");return}const p=await Notification.requestPermission();const b=document.getElementById("alertPermissionBtn");if(b)b.textContent=p==="granted"?"Order alerts enabled":"Enable order alerts"}
+function urlBase64ToUint8Array(base64String){const padding="=".repeat((4-(base64String.length%4))%4);const base64=(base64String+padding).replace(/-/g,"+").replace(/_/g,"/");const rawData=atob(base64);return Uint8Array.from([...rawData].map(char=>char.charCodeAt(0)))}
+async function syncPushSubscription(){
+  if(!("serviceWorker"in navigator)||!("PushManager"in window)||!("Notification"in window)||Notification.permission!=="granted")return false;
+  const {data:{user}}=await client.auth.getUser();
+  if(!user)return false;
+
+  const registration=await registerServiceWorker();
+  if(!registration)throw new Error("Service worker could not be registered.");
+  let subscription=await registration.pushManager.getSubscription();
+
+  if(!subscription){
+    const key=window.AZAD_CONFIG?.webPushPublicKey;
+    if(!key)throw new Error("Web Push is not configured.");
+
+    subscription=await registration.pushManager.subscribe({
+      userVisibleOnly:true,
+      applicationServerKey:urlBase64ToUint8Array(key)
+    });
+  }
+
+  const {error}=await client.from("admin_push_subscriptions").upsert({
+    user_id:user.id,
+    endpoint:subscription.endpoint,
+    subscription:subscription.toJSON(),
+    enabled:true,
+    updated_at:new Date().toISOString()
+  },{onConflict:"endpoint"});
+
+  if(error)throw error;
+  return true;
+}
+async function enableOrderAlerts(){
+  if(!("Notification"in window)){
+    alert("This browser does not support notifications.");
+    return;
+  }
+
+  await prepareAlertSound();
+
+  const p=await Notification.requestPermission();
+  const b=document.getElementById("alertPermissionBtn");
+
+  if(p!=="granted"){
+    if(b)b.textContent="Enable order alerts";
+    return;
+  }
+
+  try{
+    await syncPushSubscription();
+    if(b)b.textContent="Order alerts enabled";
+  }catch(error){
+    console.error("Push registration failed:",error);
+    if(b)b.textContent="Enable order alerts";
+    alert("Alerts could not be enabled: "+(error.message||"Unknown error"));
+  }
+}
 </script>
 <script>
 const {createClient}=window.supabase;
@@ -112,15 +161,9 @@ const DEMO=[{id:"d1",name:"Celebration Cake",category:"Cakes",price:899,descript
 let data=[],editId=null;
 const $=id=>document.getElementById(id); function safe(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 function setError(m){$("loginError").textContent=m||""}
-async function boot(){
-  registerServiceWorker();
-  setupInstallPrompt();
-  const {data:{session}}=await client.auth.getSession();
-  if(session){await verifyOwner();}
-  else{$("login").style.display="grid"}
-}
+async function boot(){await registerServiceWorker();setupInstallPrompt();const {data:{session}}=await client.auth.getSession();if(session){await verifyOwner();}else{$("login").style.display="grid"}}
 async function login(){setError("");const email=$("email").value.trim(),password=$("password").value;if(!email||!password){setError("Enter the owner email and password.");return}const {error}=await client.auth.signInWithPassword({email,password});if(error){setError(error.message);return}await verifyOwner()}
-async function verifyOwner(){const {data:owner,error}=await client.rpc("is_owner");if(error||owner!==true){await client.auth.signOut();$("login").style.display="grid";setError("This account is authenticated but is not registered as an Azad Bakers owner.");return}$("login").style.display="none";$("app").style.display="block";await refreshAll();await subscribeOrders();if("Notification" in window&&Notification.permission==="granted")$("alertPermissionBtn").textContent="Order alerts enabled";await subscribeOrders();if("Notification" in window&&Notification.permission==="granted")$("alertPermissionBtn").textContent="Order alerts enabled"}
+async function verifyOwner(){const {data:owner,error}=await client.rpc("is_owner");if(error||owner!==true){await client.auth.signOut();$("login").style.display="grid";setError("This account is authenticated but is not registered as an Azad Bakers owner.");return}$("login").style.display="none";$("app").style.display="block";await refreshAll();await subscribeOrders();if("Notification" in window&&Notification.permission==="granted"){try{await syncPushSubscription();$("alertPermissionBtn").textContent="Order alerts enabled"}catch(error){console.warn("Push sync failed:",error)}}}
 async function logout(){await client.auth.signOut();location.reload()}
 document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{document.querySelectorAll(".nav button").forEach(x=>x.classList.remove("active"));document.querySelectorAll(".screen").forEach(x=>x.classList.remove("active"));b.classList.add("active");$(b.dataset.screen).classList.add("active");if(b.dataset.screen==="products")renderProducts();if(b.dataset.screen==="orders")loadOrders()})
 document.addEventListener("click",e=>{const close=e.target.closest("[data-close-order]");if(close){const d=close.closest(".detail-open");if(d)d.remove();return}const btn=e.target.closest("[data-view-order]");if(btn){const o=orderCache.get(btn.dataset.viewOrder);if(o)showOrderDetail(o)}});document.addEventListener("change",e=>{const el=e.target.closest("[data-status-id]");if(el&&el.value){setOrderStatus(el.dataset.statusId,el.value)}});async function refreshAll(){await loadProducts();await loadOrders();await loadSettings()}
@@ -140,8 +183,6 @@ async function loadOrders(){
   $("mOrders").textContent=rows?.length||0;
   const panel=$("orders").querySelector(".panel");
   if(!rows?.length){panel.innerHTML='<div class="empty">No customer orders yet. New website orders will appear here automatically.</div>';return}
-  const fresh=rows.filter(o=>o.status==="pending"&&!previousOrderIds.has(o.id));
-  if(previousOrderIds.size&&fresh.length)notifyNewOrders(fresh);
   previousOrderIds=new Set(rows.map(o=>o.id));
   orderCache.clear();rows.forEach(o=>orderCache.set(o.id,o));
   panel.innerHTML='<div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Items</th><th>Total</th><th>Fulfilment</th><th>Status</th><th>When</th><th></th></tr></thead><tbody>'+
@@ -179,23 +220,8 @@ function showOrderDetail(o){
   const node=wrapper.firstElementChild;
   document.querySelector("#orders .panel").appendChild(node);
 }
-async function subscribeOrders(){
-  if(orderChannel)return;
-  orderChannel=client.channel("azad-orders-live")
-    .on("postgres_changes",{
-      event:"INSERT",
-      schema:"public",
-      table:"orders"
-    },payload=>{
-      loadOrders();
-      notifyNewOrder(payload.new);
-    })
-    .subscribe(status=>{
-      if(status==="SUBSCRIBED")console.log("Live order updates connected");
-    });
-}
-function notifyNewOrders(rows){document.title=`(${rows.length}) New order · Azad Bakers`;setTimeout(()=>{document.title="Azad Bakers · Admin"},5000);if("Notification" in window&&Notification.permission==="granted")rows.forEach(o=>new Notification("New Azad Bakers order",{body:`${o.customer_name} · ₹${Number(o.total).toLocaleString("en-IN")}`}));try{const AC=window.AudioContext||window.webkitAudioContext;if(AC){const ac=new AC();const osc=ac.createOscillator();const gain=ac.createGain();gain.gain.value=.04;osc.frequency.value=880;osc.connect(gain);gain.connect(ac.destination);osc.start();osc.stop(ac.currentTime+.15)}}catch{}}
-async function enableOrderAlerts(){if(!("Notification" in window)){alert("This browser does not support notifications.");return}const p=await Notification.requestPermission();$("alertPermissionBtn").textContent=p==="granted"?"Order alerts enabled":"Enable order alerts"}
+async function subscribeOrders(){if(orderChannel)return;orderChannel=client.channel("azad-orders-live").on("postgres_changes",{event:"INSERT",schema:"public",table:"orders"},payload=>{loadOrders();notifyNewOrder(payload.new)}).subscribe((status)=>{if(status==="SUBSCRIBED")console.log("Live order updates connected")})}
+
 async function loadSettings(){const {data:row,error}=await client.from("store_settings").select("*").eq("id",true).maybeSingle();if(error||!row)return;const fields=["sName","sWhats","sPhone","sMaps","sAddress","sHours"];if($("sName")){ $("sName").value=row.bakery_name||"";$("sWhats").value=row.whatsapp||"";$("sPhone").value=row.phone||"";$("sMaps").value=row.maps_url||"";$("sAddress").value=row.address||"";$("sHours").value=row.hours||""}}
 async function saveSettings(){const payload={bakery_name:$("sName").value.trim(),whatsapp:$("sWhats").value.trim(),phone:$("sPhone").value.trim(),maps_url:$("sMaps").value.trim(),address:$("sAddress").value.trim(),hours:$("sHours").value.trim()};const {error}=await client.from("store_settings").update(payload).eq("id",true);if(error){alert("Save failed: "+error.message);return}alert("Settings saved.")}
 async function seed(){if(!confirm("Add the demo catalogue to Supabase?"))return;const payload=DEMO.map(x=>({name:x.name,category:x.category,price:x.price,description:x.description,image_url:x.image_url,badge:x.badge,active:x.active}));const {error}=await client.from("products").insert(payload);if(error){alert("Seed failed: "+error.message);return}await loadProducts()}
